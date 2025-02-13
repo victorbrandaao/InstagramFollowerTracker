@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.IO;
+using System.Linq;
 
 public class InstagramScraper
 {
@@ -39,11 +40,11 @@ public class InstagramScraper
         return await GetFollowersList(userId);
     }
 
-    private async Task Login()
+    public async Task Login()
     {
         var loginUrl = "https://www.instagram.com/accounts/login/ajax/";
 
-        // Primeiro, obter a página inicial para capturar os cookies e o token CSRF
+        // Obter a página inicial para capturar os cookies e o token CSRF
         var initialResponse = await _httpClient.GetAsync("https://www.instagram.com/");
         var initialContent = await initialResponse.Content.ReadAsStringAsync();
 
@@ -55,17 +56,23 @@ public class InstagramScraper
         }
         var csrfToken = csrfMatch.Groups[1].Value;
 
-        // Atualizar o header X-CSRFToken
+        // Atualizar os headers necessários
         _httpClient.DefaultRequestHeaders.Remove("X-CSRFToken");
         _httpClient.DefaultRequestHeaders.Add("X-CSRFToken", csrfToken);
         _httpClient.DefaultRequestHeaders.Remove("X-Requested-With");
         _httpClient.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+        _httpClient.DefaultRequestHeaders.Remove("X-IG-App-ID");
+        _httpClient.DefaultRequestHeaders.Add("X-IG-App-ID", "936619743392459");
+
+        // Preparar o valor da senha criptografada
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var encPassword = $"#PWD_INSTAGRAM_BROWSER:0:{timestamp}:{_password}";
 
         // Preparar o conteúdo da requisição de login
         var content = new FormUrlEncodedContent(new[]
         {
             new KeyValuePair<string, string>("username", _username),
-            new KeyValuePair<string, string>("password", _password),
+            new KeyValuePair<string, string>("enc_password", encPassword),
             new KeyValuePair<string, string>("queryParams", "{}"),
             new KeyValuePair<string, string>("optIntoOneTap", "false"),
         });
@@ -86,12 +93,12 @@ public class InstagramScraper
         // Analisar a resposta JSON
         var jsonResponse = JObject.Parse(responseContent);
 
-        if (jsonResponse["authenticity_token"] != null && jsonResponse["authenticated"].Value<bool>() == false)
+        if (jsonResponse["authenticity_token"] != null && jsonResponse["authenticated"]?.Value<bool>() == false)
         {
             throw new Exception("Login falhou: Usuário ou senha inválidos.");
         }
 
-        if (jsonResponse["two_factor_required"] != null && jsonResponse["two_factor_required"].Value<bool>() == true)
+        if (jsonResponse["two_factor_required"] != null && jsonResponse["two_factor_required"]?.Value<bool>() == true)
         {
             // 2FA é necessário
             Console.Write("Insira o código de autenticação de dois fatores: ");
@@ -101,11 +108,10 @@ public class InstagramScraper
                 throw new Exception("Código de autenticação de dois fatores não fornecido.");
             }
 
-            // Enviar o código de 2FA
             await SubmitTwoFactorCode(twoFactorCode, jsonResponse["two_factor_info"]);
         }
 
-        if (jsonResponse["authenticated"] != null && jsonResponse["authenticated"].Value<bool>() == true)
+        if (jsonResponse["authenticated"] != null && jsonResponse["authenticated"]?.Value<bool>() == true)
         {
             Console.WriteLine("Login realizado com sucesso!");
             return;
@@ -118,7 +124,6 @@ public class InstagramScraper
     {
         var twoFactorUrl = "https://www.instagram.com/accounts/login/ajax/two_factor/";
 
-        // Extrair informações necessárias para 2FA
         string? verificationMethod = twoFactorInfo?["verification_method"]?.ToString();
         string? obfuscatedPhoneNumber = twoFactorInfo?["obfuscated_phone_number"]?.ToString();
 
@@ -127,23 +132,18 @@ public class InstagramScraper
             throw new Exception("Método de verificação de 2FA não disponível.");
         }
 
-        var loginUrl = "https://www.instagram.com/accounts/login/ajax/";
-
-        // Preparar o conteúdo da requisição de 2FA
         var content = new FormUrlEncodedContent(new[]
         {
             new KeyValuePair<string, string>("username", _username),
-            new KeyValuePair<string, string>("enc_password", $"#PWD_INSTAGRAM_BROWSER:0:&:{_password}"), // Encoded password format
+            new KeyValuePair<string, string>("enc_password", $"#PWD_INSTAGRAM_BROWSER:0:{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}:{_password}"),
             new KeyValuePair<string, string>("queryParams", "{}"),
             new KeyValuePair<string, string>("optIntoOneTap", "false"),
             new KeyValuePair<string, string>("verificationCode", twoFactorCode),
         });
 
-        // Enviar a requisição de 2FA
         var response = await _httpClient.PostAsync(twoFactorUrl, content);
         var responseContent = await response.Content.ReadAsStringAsync();
 
-        // Logs para depuração
         Console.WriteLine($"2FA Status Code: {response.StatusCode}");
         Console.WriteLine($"2FA Response Content: {responseContent}");
 
@@ -154,13 +154,13 @@ public class InstagramScraper
 
         var jsonResponse = JObject.Parse(responseContent);
 
-        if (jsonResponse["authenticated"] != null && jsonResponse["authenticated"].Value<bool>() == true)
+        if (jsonResponse["authenticated"] != null && jsonResponse["authenticated"]?.Value<bool>() == true)
         {
             Console.WriteLine("Autenticação de dois fatores concluída com sucesso!");
             return;
         }
 
-        if (jsonResponse["two_factor_required"] != null && jsonResponse["two_factor_required"].Value<bool>() == true)
+        if (jsonResponse["two_factor_required"] != null && jsonResponse["two_factor_required"]?.Value<bool>() == true)
         {
             throw new Exception("Autenticação de dois fatores falhou: Código inválido.");
         }
@@ -218,7 +218,6 @@ public class InstagramScraper
             hasNextPage = data.data.user.edge_followed_by.page_info.has_next_page;
             endCursor = data.data.user.edge_followed_by.page_info.end_cursor;
 
-            // Adicionar um delay para evitar limite de requisições
             await Task.Delay(2000);
         }
 
